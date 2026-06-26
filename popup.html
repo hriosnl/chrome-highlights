@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Highlights</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header class="header">
+    <img src="icons/icon32.png" alt="" class="header-icon" width="20" height="20" />
+    <span class="header-title">Highlights</span>
+  </header>
+
+  <section class="picker-section">
+    <div class="picker-main">
+      <button id="active-swatch" class="swatch swatch-lg" type="button" aria-label="Active highlight color"></button>
+      <div id="swatch-row" class="swatch-row"></div>
+    </div>
+    <button id="copy-all" class="copy-all" type="button">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7V3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h1zm2 0h10v12h-2V9a1 1 0 0 0-1-1H9V7zm-2 2v12h10v-2H9a1 1 0 0 1-1-1V9z"/></svg>
+      Copy all
+    </button>
+  </section>
+
+  <section class="list-section">
+    <ul id="highlight-list" class="highlight-list"></ul>
+    <p id="empty-state" class="empty-state" hidden>No highlights on this page yet.</p>
+  </section>
+
+  <footer class="footer">
+    <a id="library-link" class="library-link" href="#">
+      All highlights
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13.172 12 8.222 7.05l1.415-1.414L16 12l-6.364 6.364-1.414-1.415z"/></svg>
+    </a>
+  </footer>
+
+  <script src="shared/colors.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
