@@ -4,6 +4,8 @@ const searchInput = document.getElementById("search");
 const noResults = document.getElementById("no-results");
 const importFileInput = document.getElementById("import-file");
 const importJsonBtn = document.getElementById("import-json");
+const createBackupBtn = document.getElementById("create-backup");
+const downloadBackupBtn = document.getElementById("download-backup");
 const exportJsonBtn = document.getElementById("export-json");
 const exportMdBtn = document.getElementById("export-md");
 
@@ -237,6 +239,52 @@ importFileInput.addEventListener("change", async () => {
   } catch (err) {
     alert(`Import failed: ${err.message}`);
   }
+});
+
+function formatBackupFilename(backup) {
+  const d = new Date(backup.createdAt);
+  const date = d.toISOString().slice(0, 10);
+  if (backup.slot === "manual") {
+    const time = d.toTimeString().slice(0, 5).replace(":", "");
+    return `highlights-backup-${date}-manual-${time}.json`;
+  }
+  const hour = String(backup.slot ?? d.getHours()).padStart(2, "0");
+  return `highlights-backup-${date}-${hour}00.json`;
+}
+
+createBackupBtn.addEventListener("click", async () => {
+  createBackupBtn.disabled = true;
+  try {
+    const res = await sendMessage({ type: "CREATE_BACKUP" });
+    if (!res.ok) throw new Error(res.error || "Backup failed");
+    const when = new Date(res.backup.createdAt).toLocaleString();
+    alert(`Backup created (${when}).`);
+  } catch (err) {
+    alert(`Backup failed: ${err.message}`);
+  } finally {
+    createBackupBtn.disabled = false;
+  }
+});
+
+downloadBackupBtn.addEventListener("click", async () => {
+  const res = await sendMessage({ type: "GET_LATEST_BACKUP" });
+  if (!res.ok || !res.backup) {
+    alert(res.error || "No backups yet. Backups run at 09:00, 15:00, and 21:00.");
+    return;
+  }
+
+  const payload = {
+    highlights_by_url: res.backup.highlights_by_url,
+    settings: res.backup.settings,
+    backupCreatedAt: res.backup.createdAt,
+    backupSlot: res.backup.slot,
+  };
+
+  downloadFile(
+    formatBackupFilename(res.backup),
+    JSON.stringify(payload, null, 2),
+    "application/json",
+  );
 });
 
 exportJsonBtn.addEventListener("click", () => {

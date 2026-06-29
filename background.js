@@ -1,4 +1,10 @@
-importScripts("shared/url.js", "shared/colors.js", "shared/storage.js", "shared/import.js");
+importScripts(
+  "shared/url.js",
+  "shared/colors.js",
+  "shared/storage.js",
+  "shared/import.js",
+  "shared/backup.js",
+);
 
 const MENU_ID = "highlights-add";
 const PENDING_SCROLL_KEY = "pending_scroll";
@@ -84,6 +90,7 @@ async function navigateToHighlight(url, highlightId) {
 
 chrome.runtime.onInstalled.addListener(() => {
   migrateUrlKeys();
+  scheduleBackupAlarm();
   chrome.contextMenus.create({
     id: MENU_ID,
     title: "Highlight",
@@ -93,9 +100,17 @@ chrome.runtime.onInstalled.addListener(() => {
 
 chrome.runtime.onStartup.addListener(() => {
   migrateUrlKeys();
+  scheduleBackupAlarm();
+});
+
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name !== BACKUP_ALARM) return;
+  await runScheduledBackupIfDue();
+  scheduleBackupAlarm();
 });
 
 migrateUrlKeys();
+scheduleBackupAlarm();
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === MENU_ID && tab?.id) {
@@ -172,6 +187,15 @@ async function handleMessage(msg, sender) {
         });
       }
       return { ok: true };
+    }
+    case "GET_LATEST_BACKUP": {
+      const backup = await getLatestBackup();
+      if (!backup) return { ok: false, error: "No backups yet" };
+      return { ok: true, backup };
+    }
+    case "CREATE_BACKUP": {
+      const backup = await forceCreateBackup();
+      return { ok: true, backup };
     }
     default:
       return { error: "Unknown message type" };

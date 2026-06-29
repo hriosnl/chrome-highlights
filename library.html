@@ -28,17 +28,27 @@
             <p id="stats" class="stats">Loading…</p>
           </div>
         </div>
-        <div class="top-actions">
-          <input id="import-file" type="file" accept=".json,application/json" hidden />
-          <button id="import-json" class="btn btn-ghost" type="button">
-            Import JSON
-          </button>
-          <button id="export-json" class="btn btn-ghost" type="button">
-            Export JSON
-          </button>
-          <button id="export-md" class="btn btn-ghost" type="button">
-            Export Markdown
-          </button>
+        <div class="top-actions-col">
+          <div class="top-actions">
+            <input id="import-file" type="file" accept=".json,application/json" hidden />
+            <button id="import-json" class="btn btn-ghost" type="button">
+              Import JSON
+            </button>
+            <button id="export-json" class="btn btn-ghost" type="button">
+              Export JSON
+            </button>
+            <button id="export-md" class="btn btn-ghost" type="button">
+              Export Markdown
+            </button>
+          </div>
+          <div class="top-actions top-actions-backup">
+            <button id="create-backup" class="btn btn-ghost" type="button">
+              Create backup
+            </button>
+            <button id="download-backup" class="btn btn-ghost" type="button">
+              Download backup
+            </button>
+          </div>
         </div>
       </header>
 
