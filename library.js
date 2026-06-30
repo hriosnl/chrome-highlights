@@ -269,7 +269,7 @@ createBackupBtn.addEventListener("click", async () => {
 downloadBackupBtn.addEventListener("click", async () => {
   const res = await sendMessage({ type: "GET_LATEST_BACKUP" });
   if (!res.ok || !res.backup) {
-    alert(res.error || "No backups yet. Backups run at 09:00, 15:00, and 21:00.");
+    alert(res.error || "No backups yet. Backups run hourly from 08:00 to 22:00.");
     return;
   }
 

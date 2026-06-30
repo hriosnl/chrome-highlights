@@ -1,9 +1,9 @@
 const BACKUPS_KEY = "highlights_backups";
 const BACKUP_META_KEY = "highlights_backup_meta";
 const BACKUP_ALARM = "highlights-backup";
-const BACKUP_HOURS = [9, 15, 21];
+const BACKUP_HOURS = Array.from({ length: 15 }, (_, i) => i + 8);
 const BACKUP_WINDOW_MINUTES = 10;
-const MAX_BACKUPS = 15;
+const MAX_BACKUPS = 60;
 
 function getNextBackupWhen() {
   const now = new Date();
