@@ -5,7 +5,12 @@ const noResults = document.getElementById("no-results");
 const importFileInput = document.getElementById("import-file");
 const importJsonBtn = document.getElementById("import-json");
 const createBackupBtn = document.getElementById("create-backup");
-const downloadBackupBtn = document.getElementById("download-backup");
+const viewBackupsBtn = document.getElementById("view-backups");
+const backupOverlay = document.getElementById("backup-overlay");
+const backupPanel = document.getElementById("backup-panel");
+const closeBackupsBtn = document.getElementById("close-backups");
+const backupList = document.getElementById("backup-list");
+const backupEmpty = document.getElementById("backup-empty");
 const exportJsonBtn = document.getElementById("export-json");
 const exportMdBtn = document.getElementById("export-md");
 
@@ -14,6 +19,9 @@ let query = "";
 
 const DELETE_ICON =
   '<svg viewBox="0 0 24 24"><path d="M17 6v12a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V6H4V4h5V3a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1h5v2h-3zM9 4v1h6V4H9zm1 3v9h1V7h-1zm3 0v9h1V7h-1z"/></svg>';
+
+const DOWNLOAD_ICON =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M13 10H18L12 16L6 10H11V3H13V10ZM4 19H20V12H22V20C22 20.5523 21.5523 21 21 21H3C2.44772 21 2 20.5523 2 20V12H4V19Z"></path></svg>';
 
 function sendMessage(msg) {
   return new Promise((resolve) => {
@@ -252,6 +260,103 @@ function formatBackupFilename(backup) {
   return `highlights-backup-${date}-${hour}00.json`;
 }
 
+function formatBackupSlot(slot) {
+  if (slot === "manual") return "Manual";
+  return `${String(slot).padStart(2, "0")}:00`;
+}
+
+function formatBackupDateTime(ts) {
+  return new Date(ts).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function downloadBackupFile(backup) {
+  const payload = {
+    highlights_by_url: backup.highlights_by_url,
+    settings: backup.settings,
+    backupCreatedAt: backup.createdAt,
+    backupSlot: backup.slot,
+  };
+
+  downloadFile(
+    formatBackupFilename(backup),
+    JSON.stringify(payload, null, 2),
+    "application/json",
+  );
+}
+
+function setBackupsPanelOpen(open) {
+  backupPanel.classList.toggle("open", open);
+  backupOverlay.classList.toggle("open", open);
+  backupPanel.setAttribute("aria-hidden", open ? "false" : "true");
+  backupOverlay.hidden = !open;
+  document.body.style.overflow = open ? "hidden" : "";
+}
+
+async function renderBackupsList() {
+  const res = await sendMessage({ type: "GET_ALL_BACKUPS" });
+  const backups = res.backups || [];
+
+  backupList.innerHTML = "";
+  backupEmpty.hidden = backups.length > 0;
+
+  for (const item of backups) {
+    const li = document.createElement("li");
+    li.className = "backup-item";
+
+    const info = document.createElement("div");
+    info.className = "backup-item-info";
+
+    const date = document.createElement("div");
+    date.className = "backup-item-date";
+    date.textContent = formatBackupDateTime(item.createdAt);
+
+    const meta = document.createElement("div");
+    meta.className = "backup-item-meta";
+    meta.innerHTML =
+      `<span class="backup-item-slot">${formatBackupSlot(item.slot)}</span>` +
+      `${item.highlightCount} highlight${item.highlightCount === 1 ? "" : "s"} · ` +
+      `${item.pageCount} page${item.pageCount === 1 ? "" : "s"}`;
+
+    info.append(date, meta);
+
+    const dlBtn = document.createElement("button");
+    dlBtn.type = "button";
+    dlBtn.className = "icon-btn";
+    dlBtn.title = "Download backup";
+    dlBtn.innerHTML = DOWNLOAD_ICON;
+    dlBtn.addEventListener("click", async () => {
+      dlBtn.disabled = true;
+      try {
+        const full = await sendMessage({ type: "GET_BACKUP_AT", index: item.index });
+        if (!full.ok || !full.backup) throw new Error(full.error || "Backup not found");
+        downloadBackupFile(full.backup);
+      } catch (err) {
+        alert(`Download failed: ${err.message}`);
+      } finally {
+        dlBtn.disabled = false;
+      }
+    });
+
+    li.append(info, dlBtn);
+    backupList.appendChild(li);
+  }
+}
+
+async function openBackupsPanel() {
+  await renderBackupsList();
+  setBackupsPanelOpen(true);
+}
+
+function closeBackupsPanel() {
+  setBackupsPanelOpen(false);
+}
+
 createBackupBtn.addEventListener("click", async () => {
   createBackupBtn.disabled = true;
   try {
@@ -259,6 +364,9 @@ createBackupBtn.addEventListener("click", async () => {
     if (!res.ok) throw new Error(res.error || "Backup failed");
     const when = new Date(res.backup.createdAt).toLocaleString();
     alert(`Backup created (${when}).`);
+    if (backupPanel.classList.contains("open")) {
+      await renderBackupsList();
+    }
   } catch (err) {
     alert(`Backup failed: ${err.message}`);
   } finally {
@@ -266,25 +374,17 @@ createBackupBtn.addEventListener("click", async () => {
   }
 });
 
-downloadBackupBtn.addEventListener("click", async () => {
-  const res = await sendMessage({ type: "GET_LATEST_BACKUP" });
-  if (!res.ok || !res.backup) {
-    alert(res.error || "No backups yet. Backups run hourly from 08:00 to 22:00.");
-    return;
+viewBackupsBtn.addEventListener("click", () => {
+  openBackupsPanel();
+});
+
+closeBackupsBtn.addEventListener("click", closeBackupsPanel);
+backupOverlay.addEventListener("click", closeBackupsPanel);
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && backupPanel.classList.contains("open")) {
+    closeBackupsPanel();
   }
-
-  const payload = {
-    highlights_by_url: res.backup.highlights_by_url,
-    settings: res.backup.settings,
-    backupCreatedAt: res.backup.createdAt,
-    backupSlot: res.backup.slot,
-  };
-
-  downloadFile(
-    formatBackupFilename(res.backup),
-    JSON.stringify(payload, null, 2),
-    "application/json",
-  );
 });
 
 exportJsonBtn.addEventListener("click", () => {

@@ -80,6 +80,31 @@ async function getLatestBackup() {
   return backups[0] || null;
 }
 
+function summarizeBackup(backup, index) {
+  const byUrl = backup.highlights_by_url || {};
+  let highlightCount = 0;
+  for (const list of Object.values(byUrl)) {
+    highlightCount += list.length;
+  }
+  return {
+    index,
+    createdAt: backup.createdAt,
+    slot: backup.slot,
+    highlightCount,
+    pageCount: Object.keys(byUrl).length,
+  };
+}
+
+async function getAllBackupsSummary() {
+  const backups = await getBackups();
+  return backups.map((backup, index) => summarizeBackup(backup, index));
+}
+
+async function getBackupAt(index) {
+  const backups = await getBackups();
+  return backups[index] || null;
+}
+
 async function forceCreateBackup() {
   return createBackup("manual");
 }
@@ -92,6 +117,8 @@ if (typeof globalThis !== "undefined") {
   globalThis.BACKUP_ALARM = BACKUP_ALARM;
   globalThis.getBackups = getBackups;
   globalThis.getLatestBackup = getLatestBackup;
+  globalThis.getAllBackupsSummary = getAllBackupsSummary;
+  globalThis.getBackupAt = getBackupAt;
   globalThis.createBackup = createBackup;
   globalThis.forceCreateBackup = forceCreateBackup;
   globalThis.runScheduledBackupIfDue = runScheduledBackupIfDue;

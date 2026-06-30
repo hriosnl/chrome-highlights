@@ -188,6 +188,14 @@ async function handleMessage(msg, sender) {
       }
       return { ok: true };
     }
+    case "GET_ALL_BACKUPS": {
+      return { ok: true, backups: await getAllBackupsSummary() };
+    }
+    case "GET_BACKUP_AT": {
+      const backup = await getBackupAt(msg.index);
+      if (!backup) return { ok: false, error: "Backup not found" };
+      return { ok: true, backup };
+    }
     case "GET_LATEST_BACKUP": {
       const backup = await getLatestBackup();
       if (!backup) return { ok: false, error: "No backups yet" };
