@@ -15,6 +15,8 @@ let defaultColorIndex = 0;
 let pageTheme = "light";
 let restorePending = false;
 let hideTooltipTimer = null;
+let scrollNavigationInProgress = false;
+let pendingScrollTimer = null;
 
 function uuid() {
   return crypto.randomUUID();
@@ -782,23 +784,71 @@ async function scrollToHighlightWithRestore(id, { hunt = true } = {}) {
   return scrollHuntForHighlight(id);
 }
 
+async function waitForPageReady({ highlightId, maxWaitMs = 25000 } = {}) {
+  let highlight = null;
+  if (highlightId) {
+    highlight = await getHighlightById(highlightId);
+  }
+
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    const text = getTextNodes()
+      .map((n) => n.textContent)
+      .join("");
+    if (text.length >= 300) {
+      if (!highlight?.text) return true;
+      const needle = highlight.text.slice(0, Math.min(32, highlight.text.length)).trim();
+      if (needle.length >= 8 && text.includes(needle)) return true;
+      if (text.length >= 1500) return true;
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return getTextNodes().map((n) => n.textContent).join("").length >= 100;
+}
+
+async function handleScrollTo(id, { hunt = true, waitForReady = true } = {}) {
+  while (scrollNavigationInProgress) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  scrollNavigationInProgress = true;
+  try {
+    await setPendingScrollForHighlight(id);
+    if (waitForReady) {
+      await waitForPageReady({ highlightId: id });
+    }
+    const scrolled = await scrollToHighlightWithRestore(id, { hunt });
+    if (scrolled) await clearPendingScroll();
+    return scrolled;
+  } finally {
+    scrollNavigationInProgress = false;
+  }
+}
+
+function schedulePendingScrollRetry() {
+  clearTimeout(pendingScrollTimer);
+  pendingScrollTimer = setTimeout(() => {
+    retryPendingScroll();
+  }, 400);
+}
+
 async function retryPendingScroll() {
   const pending = await getPendingScroll();
-  if (!pending) return;
+  if (!pending || scrollNavigationInProgress) return;
 
   let scrolled = await scrollToHighlightWithRestore(pending.id, { hunt: false });
   if (!scrolled) {
-    scrolled = await scrollToHighlightWithRestore(pending.id, { hunt: true });
+    scrolled = await handleScrollTo(pending.id, { hunt: true, waitForReady: false });
+  } else {
+    await clearPendingScroll();
   }
-  if (scrolled) await clearPendingScroll();
 }
 
 async function consumePendingScroll() {
   const pending = await getPendingScroll();
   if (!pending) return;
 
-  const scrolled = await scrollToHighlightWithRestore(pending.id);
-  if (scrolled) await clearPendingScroll();
+  await handleScrollTo(pending.id, { hunt: true, waitForReady: true });
 }
 
 // --- Tooltip ---
@@ -1120,15 +1170,17 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     sendResponse({ ok: true });
     return true;
   }
+  if (msg.type === "PING") {
+    sendResponse({ ok: true });
+    return true;
+  }
   if (msg.type === "SCROLL_TO") {
-    setPendingScrollForHighlight(msg.id)
-      .then(() =>
-        scrollToHighlightWithRestore(msg.id, { hunt: msg.hunt !== false }),
-      )
-      .then(async (scrolled) => {
-        if (scrolled) await clearPendingScroll();
-        sendResponse({ ok: true, scrolled });
-      });
+    handleScrollTo(msg.id, {
+      hunt: msg.hunt !== false,
+      waitForReady: msg.waitForReady !== false,
+    }).then((scrolled) => {
+      sendResponse({ ok: true, scrolled });
+    });
     return true;
   }
   if (msg.type === "GET_MIGRATION_STATUS") {
@@ -1176,7 +1228,7 @@ window
     const observer = new MutationObserver(() => {
       if (!isContextValid()) return;
       scheduleRestore();
-      retryPendingScroll();
+      schedulePendingScrollRetry();
     });
     observer.observe(document.body, { childList: true, subtree: true });
   }

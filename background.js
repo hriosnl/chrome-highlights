@@ -51,19 +51,34 @@ function waitForTabComplete(tabId) {
   });
 }
 
+async function waitForContentScript(tabId, maxAttempts = 50) {
+  for (let i = 0; i < maxAttempts; i++) {
+    const res = await safeTabMessage(tabId, { type: "PING" });
+    if (res?.ok) return true;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return false;
+}
+
 async function scrollInTab(tabId, highlightId) {
+  await waitForContentScript(tabId);
+
   const res = await safeTabMessage(tabId, {
     type: "SCROLL_TO",
     id: highlightId,
+    hunt: true,
+    waitForReady: true,
   });
   if (res?.scrolled) return true;
 
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 40; i++) {
     await new Promise((r) => setTimeout(r, 500));
+    const useHunt = i > 0 && i % 6 === 0;
     const retry = await safeTabMessage(tabId, {
       type: "SCROLL_TO",
       id: highlightId,
-      hunt: false,
+      hunt: useHunt,
+      waitForReady: useHunt,
     });
     if (retry?.scrolled) return true;
   }
@@ -90,7 +105,7 @@ async function navigateToHighlight(url, highlightId) {
 
   const tab = await chrome.tabs.create({ url, active: true });
   await waitForTabComplete(tab.id);
-  await new Promise((r) => setTimeout(r, 300));
+  await waitForContentScript(tab.id);
   await scrollInTab(tab.id, highlightId);
   return { ok: true };
 }
