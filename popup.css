@@ -204,6 +204,15 @@ body {
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
 }
 
+.highlight-item-outdated {
+  border-color: #d93025;
+}
+
+.highlight-item-outdated:hover {
+  border-color: #b3261e;
+  box-shadow: 0 1px 4px rgba(217, 48, 37, 0.12);
+}
+
 .highlight-text {
   font-size: 13px;
   font-weight: 500;

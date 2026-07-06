@@ -10,6 +10,7 @@ const migrateBtn = document.getElementById("migrate-btn");
 
 let currentColorIndex = 0;
 let currentTab = null;
+let outdatedHighlightIds = new Set();
 
 function sendMessage(msg) {
   return new Promise((resolve) => {
@@ -55,13 +56,18 @@ function showMigrationBanner(count) {
   migrationBanner.hidden = false;
 }
 
-async function refreshMigrationBanner() {
+async function fetchMigrationStatus() {
   if (!currentTab?.id) {
-    hideMigrationBanner();
-    return;
+    outdatedHighlightIds = new Set();
+    return { ok: false, outdated: 0, outdatedIds: [] };
   }
-
   const status = await sendTabMessage({ type: "GET_MIGRATION_STATUS" });
+  outdatedHighlightIds = new Set(status.outdatedIds || []);
+  return status;
+}
+
+async function refreshMigrationBanner() {
+  const status = await fetchMigrationStatus();
   if (!status.ok || !status.outdated) {
     hideMigrationBanner();
     return;
@@ -118,7 +124,7 @@ function renderList(highlights) {
     const li = document.createElement("li");
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = "highlight-item";
+    btn.className = `highlight-item${outdatedHighlightIds.has(h.id) ? " highlight-item-outdated" : ""}`;
     btn.dataset.id = h.id;
 
     const content = document.createElement("div");
@@ -192,6 +198,13 @@ migrateBtn.addEventListener("click", async () => {
     return;
   }
 
+  const pageRes = await sendMessage({
+    type: "GET_PAGE_HIGHLIGHTS",
+    url: currentTab?.url,
+  });
+  renderList(pageRes.highlights || []);
+  await refreshMigrationBanner();
+
   if (res.failed > 0) {
     migrationText.textContent =
       `Updated ${res.updated}. ${res.failed} not found — scroll the page and try again.`;
@@ -219,12 +232,13 @@ async function init() {
   const settingsRes = await sendMessage({ type: "GET_SETTINGS" });
   renderSwatches(settingsRes.settings?.defaultColorIndex ?? 0);
 
+  await refreshMigrationBanner();
+
   const res = await sendMessage({
     type: "GET_PAGE_HIGHLIGHTS",
     url: tab.url,
   });
   renderList(res.highlights || []);
-  await refreshMigrationBanner();
 }
 
 init();
