@@ -5,6 +5,8 @@ const PENDING_SCROLL_KEY = "pending_scroll";
 
 let tooltipEl = null;
 let activeMark = null;
+let activeHlId = null;
+let lastPointer = { x: 0, y: 0 };
 let defaultColorIndex = 0;
 let pageTheme = "light";
 let restorePending = false;
@@ -120,9 +122,10 @@ function refreshAllMarkStyles() {
       mark.style.setProperty("--hl-badge", pair.text);
     }
   });
-  if (tooltipEl) {
+  if (tooltipEl && activeHlId) {
     tooltipEl.classList.toggle("hl-theme-dark", pageTheme === "dark");
     tooltipEl.classList.toggle("hl-theme-light", pageTheme === "light");
+    positionTooltip(activeHlId, lastPointer);
   }
 }
 
@@ -170,23 +173,69 @@ function getOccurrenceIndexFromRange(range, searchText) {
   return count;
 }
 
-function locateOccurrence(searchText, occurrenceIndex) {
-  const nodes = getTextNodes();
-  let occurrence = 0;
+function buildTextSegments(nodes) {
+  const segments = [];
+  let offset = 0;
   for (const node of nodes) {
-    const t = node.textContent;
-    let start = 0;
-    while (true) {
-      const idx = t.indexOf(searchText, start);
-      if (idx === -1) break;
-      if (occurrence === occurrenceIndex) {
-        return { node, start: idx, end: idx + searchText.length };
-      }
-      occurrence++;
-      start = idx + 1;
+    const text = node.textContent;
+    segments.push({ node, start: offset, end: offset + text.length });
+    offset += text.length;
+  }
+  return { segments, fullText: nodes.map((n) => n.textContent).join("") };
+}
+
+function offsetToRange(globalStart, globalEnd, segments) {
+  const range = document.createRange();
+  let startSet = false;
+
+  for (const seg of segments) {
+    if (!startSet && globalStart < seg.end) {
+      range.setStart(seg.node, globalStart - seg.start);
+      startSet = true;
+    }
+    if (startSet && globalEnd <= seg.end) {
+      range.setEnd(seg.node, globalEnd - seg.start);
+      return range;
     }
   }
   return null;
+}
+
+function findTextOccurrenceRange(searchText, occurrenceIndex, prefixHint) {
+  const nodes = getTextNodes();
+  const { segments, fullText } = buildTextSegments(nodes);
+  let occurrence = 0;
+  let searchStart = 0;
+
+  while (true) {
+    const idx = fullText.indexOf(searchText, searchStart);
+    if (idx === -1) break;
+
+    if (prefixHint) {
+      const ctx = getContextAround(fullText, idx);
+      const savedTail = prefixHint.slice(-24);
+      const foundTail = ctx.prefix.slice(-24);
+      if (savedTail && foundTail && savedTail !== foundTail) {
+        searchStart = idx + 1;
+        continue;
+      }
+    }
+
+    if (occurrence === occurrenceIndex) {
+      return offsetToRange(idx, idx + searchText.length, segments);
+    }
+    occurrence++;
+    searchStart = idx + 1;
+  }
+  return null;
+}
+
+function getMarksById(id) {
+  return [...document.querySelectorAll(`.${HL_CLASS}[data-hl-id="${id}"]`)];
+}
+
+function getPrimaryMark(id) {
+  return getMarksById(id)[0] || null;
 }
 
 function wrapTextNodeRange(node, start, end, id, colorIndex) {
@@ -208,17 +257,47 @@ function wrapTextNodeRange(node, start, end, id, colorIndex) {
   return mark;
 }
 
+function createMarkElement(id, colorIndex) {
+  const mark = document.createElement("mark");
+  mark.className = HL_CLASS;
+  mark.dataset.hlId = id;
+  applyMarkStyle(mark, colorIndex);
+  return mark;
+}
+
+function rangeInsideHighlight(range) {
+  for (const mark of document.querySelectorAll(`.${HL_CLASS}`)) {
+    if (range.intersectsNode(mark)) return true;
+  }
+  return false;
+}
+
+function applyNoteToHighlight(id, note) {
+  for (const m of getMarksById(id)) applyNoteBadge(m, note);
+}
+
+function applyColorToHighlight(id, colorIndex) {
+  const isDark = pageTheme === "dark";
+  for (const m of getMarksById(id)) {
+    applyMarkStyle(m, colorIndex);
+    if (m.classList.contains("hl-has-note")) {
+      const pair = getColorPair(colorIndex, isDark);
+      m.style.setProperty("--hl-badge", pair.text);
+    }
+  }
+}
+
 function wrapRange(range, id, colorIndex) {
   if (range.collapsed) return null;
   const text = range.toString();
   if (!text.trim()) return null;
+  if (rangeInsideHighlight(range)) return null;
 
   try {
-    const mark = document.createElement("mark");
-    mark.className = HL_CLASS;
-    mark.dataset.hlId = id;
-    applyMarkStyle(mark, colorIndex);
-    range.surroundContents(mark);
+    const mark = createMarkElement(id, colorIndex);
+    const contents = range.extractContents();
+    mark.appendChild(contents);
+    range.insertNode(mark);
     return mark;
   } catch {
     const nodes = getTextNodes(range.commonAncestorContainer);
@@ -234,6 +313,18 @@ function wrapRange(range, id, colorIndex) {
       }
     }
     return marks[0] || null;
+  }
+}
+
+function unwrapHighlight(id) {
+  for (const mark of getMarksById(id)) {
+    const parent = mark.parentNode;
+    if (!parent) continue;
+    while (mark.firstChild) {
+      parent.insertBefore(mark.firstChild, mark);
+    }
+    parent.removeChild(mark);
+    parent.normalize();
   }
 }
 
@@ -299,37 +390,19 @@ async function restoreHighlights() {
   for (const h of highlights) {
     const existing = document.querySelector(`[data-hl-id="${h.id}"]`);
     if (existing) {
-      applyNoteBadge(existing, h.note || "");
+      applyNoteToHighlight(h.id, h.note || "");
       continue;
     }
 
-    let loc = locateOccurrence(h.text, h.anchor?.occurrenceIndex ?? 0);
-    if (!loc && h.anchor?.prefix) {
-      const nodes = getTextNodes();
-      for (const node of nodes) {
-        const t = node.textContent;
-        let idx = 0;
-        while ((idx = t.indexOf(h.text, idx)) !== -1) {
-          const ctx = getContextAround(t, idx);
-          const savedTail = (h.anchor.prefix || "").slice(-24);
-          const foundTail = ctx.prefix.slice(-24);
-          if (savedTail && foundTail && savedTail === foundTail) {
-            loc = { node, start: idx, end: idx + h.text.length };
-            break;
-          }
-          idx += 1;
-        }
-        if (loc) break;
-      }
-    }
-    if (!loc) continue;
-    const mark = wrapTextNodeRange(
-      loc.node,
-      loc.start,
-      loc.end,
-      h.id,
-      h.colorIndex,
+    const range = findTextOccurrenceRange(
+      h.text,
+      h.anchor?.occurrenceIndex ?? 0,
+      h.anchor?.prefix,
     );
+    if (!range) continue;
+
+    const mark = wrapRange(range, h.id, h.colorIndex);
+    if (!mark) continue;
     applyNoteBadge(mark, h.note || "");
   }
 
@@ -423,16 +496,15 @@ function scheduleHideTooltip() {
 function closeTooltip() {
   cancelHideTooltip();
   if (tooltipEl) {
-    if (activeMark) {
+    if (activeHlId) {
       const notePanel = tooltipEl.querySelector('[data-panel="note"]');
       if (notePanel?.classList.contains("hl-open")) {
         const textarea = notePanel.querySelector("textarea");
-        const id = activeMark.dataset.hlId;
+        const id = activeHlId;
         const val = textarea?.value.trim() ?? "";
-        const prev = activeMark.dataset.hlNote || "";
+        const prev = activeMark?.dataset.hlNote || "";
         if (val !== prev) {
-          const mark = activeMark;
-          applyNoteBadge(mark, val);
+          applyNoteToHighlight(id, val);
           updateHighlightData(id, { note: val });
         }
       }
@@ -441,11 +513,53 @@ function closeTooltip() {
     tooltipEl = null;
   }
   activeMark = null;
+  activeHlId = null;
 }
 
-function positionTooltip(mark) {
+function getLineRectsForHighlight(id) {
+  const rects = [];
+  for (const mark of getMarksById(id)) {
+    for (const rect of mark.getClientRects()) {
+      if (rect.width > 0 && rect.height > 0) rects.push(rect);
+    }
+  }
+  return rects;
+}
+
+function pickLineRect(rects, clientX, clientY) {
+  if (!rects.length) return null;
+
+  for (const rect of rects) {
+    if (
+      clientX >= rect.left &&
+      clientX <= rect.right &&
+      clientY >= rect.top &&
+      clientY <= rect.bottom
+    ) {
+      return rect;
+    }
+  }
+
+  let best = rects[0];
+  let bestDist = Infinity;
+  for (const rect of rects) {
+    const midY = (rect.top + rect.bottom) / 2;
+    const dist = Math.abs(clientY - midY);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = rect;
+    }
+  }
+  return best;
+}
+
+function positionTooltip(hlId, pointer = lastPointer) {
   if (!tooltipEl) return;
-  const rect = mark.getBoundingClientRect();
+  const rects = getLineRectsForHighlight(hlId);
+  const rect =
+    pickLineRect(rects, pointer.x, pointer.y) || rects[0] || null;
+  if (!rect) return;
+
   const tip = tooltipEl;
   const tipRect = tip.getBoundingClientRect();
   let top = rect.top + window.scrollY - tipRect.height - 8;
@@ -464,12 +578,19 @@ function positionTooltip(mark) {
   tip.style.left = `${left}px`;
 }
 
-function openTooltip(mark) {
-  if (activeMark === mark && tooltipEl) return;
+function openTooltip(mark, pointer) {
+  const id = mark.dataset.hlId;
+  if (pointer) lastPointer = pointer;
+
+  if (activeHlId === id && tooltipEl) {
+    positionTooltip(id, lastPointer);
+    return;
+  }
 
   closeTooltip();
-  activeMark = mark;
-  const id = mark.dataset.hlId;
+  activeHlId = id;
+  activeMark = getPrimaryMark(id) || mark;
+  mark = activeMark;
   const colorIndex = parseInt(mark.dataset.hlColor || "0", 10);
   const note = mark.dataset.hlNote || "";
 
@@ -502,7 +623,7 @@ function openTooltip(mark) {
   `;
 
   document.body.appendChild(tooltipEl);
-  positionTooltip(mark);
+  positionTooltip(id, lastPointer);
 
   const notePreview = tooltipEl.querySelector('[data-panel="note-preview"]');
   const notePanel = tooltipEl.querySelector('[data-panel="note"]');
@@ -516,9 +637,9 @@ function openTooltip(mark) {
     url: location.href,
   }).then((res) => {
     const item = (res.highlights || []).find((h) => h.id === id);
-    if (!item || !tooltipEl || activeMark !== mark) return;
+    if (!item || !tooltipEl || activeHlId !== id) return;
     if (item.note) {
-      applyNoteBadge(mark, item.note);
+      applyNoteToHighlight(id, item.note);
       textarea.value = item.note;
       syncNotePreview(notePreview, item.note, notePanel.classList.contains("hl-open"));
       const noteBtn = tooltipEl.querySelector('[data-action="note"]');
@@ -526,13 +647,14 @@ function openTooltip(mark) {
         noteBtn.classList.add("hl-active");
         noteBtn.innerHTML = ICONS.noteFill;
       }
-      positionTooltip(mark);
+      positionTooltip(id, lastPointer);
     }
   });
 
   tooltipEl.addEventListener("mouseenter", cancelHideTooltip);
   tooltipEl.addEventListener("mouseleave", (e) => {
-    if (e.relatedTarget?.closest(`.${HL_CLASS}`)) return;
+    const toMark = e.relatedTarget?.closest?.(`.${HL_CLASS}`);
+    if (toMark?.dataset.hlId === id) return;
     scheduleHideTooltip();
   });
 
@@ -556,7 +678,7 @@ function openTooltip(mark) {
         cancelHideTooltip();
         textarea.focus();
       }
-      positionTooltip(mark);
+      positionTooltip(id, lastPointer);
     }
 
     if (action === "color") {
@@ -564,26 +686,23 @@ function openTooltip(mark) {
       notePanel.classList.remove("hl-open");
       syncNotePreview(notePreview, textarea.value, false);
       cancelHideTooltip();
-      positionTooltip(mark);
+      positionTooltip(id, lastPointer);
     }
 
     if (action === "save-note") {
       const val = textarea.value.trim();
       await updateHighlightData(id, { note: val });
-      applyNoteBadge(mark, val);
+      applyNoteToHighlight(id, val);
       const noteBtn = tooltipEl.querySelector('[data-action="note"]');
       noteBtn.classList.toggle("hl-active", !!val);
       noteBtn.innerHTML = val ? ICONS.noteFill : ICONS.note;
       notePanel.classList.remove("hl-open");
       syncNotePreview(notePreview, val, false);
-      positionTooltip(mark);
+      positionTooltip(id, lastPointer);
     }
 
     if (action === "delete") {
-      const parent = mark.parentNode;
-      const text = mark.textContent;
-      parent.replaceChild(document.createTextNode(text), mark);
-      parent.normalize();
+      unwrapHighlight(id);
       await deleteHighlightData(id);
       closeTooltip();
     }
@@ -593,11 +712,7 @@ function openTooltip(mark) {
     const sw = e.target.closest(".hl-color-swatch");
     if (!sw) return;
     const idx = parseInt(sw.dataset.color, 10);
-    applyMarkStyle(mark, idx);
-    if (mark.classList.contains("hl-has-note")) {
-      const pair = getColorPair(idx, pageTheme === "dark");
-      mark.style.setProperty("--hl-badge", pair.text);
-    }
+    applyColorToHighlight(id, idx);
     await updateHighlightData(id, { colorIndex: idx });
     colorPanel.querySelectorAll(".hl-color-swatch").forEach((s) => {
       s.classList.toggle("hl-selected", s === sw);
@@ -614,17 +729,31 @@ function openTooltip(mark) {
 
 // --- Events ---
 
+function getMarkHlId(node) {
+  return node?.closest?.(`.${HL_CLASS}`)?.dataset?.hlId ?? null;
+}
+
 document.addEventListener("mouseover", (e) => {
   const mark = e.target.closest(`.${HL_CLASS}`);
   const inTooltip = e.target.closest(`#${TOOLTIP_ID}`);
 
   if (mark) {
     cancelHideTooltip();
-    openTooltip(mark);
+    openTooltip(mark, { x: e.clientX, y: e.clientY });
     return;
   }
   if (inTooltip) {
     cancelHideTooltip();
+  }
+});
+
+document.addEventListener("mousemove", (e) => {
+  const mark = e.target.closest(`.${HL_CLASS}`);
+  if (!mark) return;
+  const id = mark.dataset.hlId;
+  if (activeHlId === id && tooltipEl) {
+    lastPointer = { x: e.clientX, y: e.clientY };
+    positionTooltip(id, lastPointer);
   }
 });
 
@@ -634,7 +763,12 @@ document.addEventListener("mouseout", (e) => {
   if (!fromMark && !fromTip) return;
 
   const to = e.relatedTarget;
-  if (to?.closest(`.${HL_CLASS}, #${TOOLTIP_ID}`)) return;
+  const fromId = fromMark?.dataset.hlId;
+  const toId = getMarkHlId(to);
+
+  if (toId && fromId && toId === fromId) return;
+  if (to?.closest(`#${TOOLTIP_ID}`)) return;
+  if (fromTip && toId === activeHlId) return;
 
   scheduleHideTooltip();
 });
