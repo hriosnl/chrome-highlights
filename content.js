@@ -387,15 +387,17 @@ async function getMigrationStatus() {
   let outdated = 0;
   let split = 0;
   let missingScroll = 0;
+  const outdatedIds = [];
 
   for (const h of highlights) {
     if (!highlightNeedsMigration(h)) continue;
     outdated++;
+    outdatedIds.push(h.id);
     if (isSplitInDom(h.id)) split++;
     if (h.anchor?.scrollRatio == null) missingScroll++;
   }
 
-  return { ok: true, outdated, split, missingScroll, total: highlights.length };
+  return { ok: true, outdated, outdatedIds, split, missingScroll, total: highlights.length };
 }
 
 async function migrateOneHighlight(h) {
@@ -500,8 +502,8 @@ async function highlightSelection() {
   await sendMessage({ type: "SAVE_HIGHLIGHT", highlight });
 }
 
-async function restoreHighlights() {
-  if (restorePending) return;
+async function restoreHighlights(force = false) {
+  if (!force && restorePending) return;
   restorePending = true;
   pageTheme = detectPageTheme();
 
@@ -565,37 +567,178 @@ function scrollToHighlight(id) {
   return true;
 }
 
-async function scrollToHighlightWithRestore(id) {
+function getMainScrollContainer() {
+  let best = document.scrollingElement || document.documentElement;
+  let bestScroll = best.scrollHeight - best.clientHeight;
+
+  for (const el of document.querySelectorAll("main, [role='main'], article")) {
+    const style = getComputedStyle(el);
+    const overflowScroll =
+      style.overflowY === "auto" ||
+      style.overflowY === "scroll" ||
+      style.overflow === "auto";
+    const scrollRoom = el.scrollHeight - el.clientHeight;
+    if (overflowScroll && scrollRoom > bestScroll) {
+      bestScroll = scrollRoom;
+      best = el;
+    }
+  }
+
+  if (bestScroll < 100) {
+    for (const el of document.querySelectorAll("*")) {
+      const style = getComputedStyle(el);
+      if (style.overflowY !== "auto" && style.overflowY !== "scroll") continue;
+      const scrollRoom = el.scrollHeight - el.clientHeight;
+      if (scrollRoom > bestScroll) {
+        bestScroll = scrollRoom;
+        best = el;
+      }
+    }
+  }
+
+  return best;
+}
+
+let huntIndicatorEl = null;
+
+function showHuntIndicator() {
+  hideHuntIndicator();
+  huntIndicatorEl = document.createElement("div");
+  huntIndicatorEl.className = "hl-hunt-indicator";
+  huntIndicatorEl.textContent = "Finding highlight…";
+  document.body.appendChild(huntIndicatorEl);
+}
+
+function hideHuntIndicator() {
+  huntIndicatorEl?.remove();
+  huntIndicatorEl = null;
+}
+
+async function getHighlightById(id) {
+  const res = await sendMessage({
+    type: "GET_PAGE_HIGHLIGHTS",
+    url: location.href,
+  });
+  return (res.highlights || []).find((h) => h.id === id) || null;
+}
+
+async function tryRestoreAndScroll(id, highlight) {
+  await restoreHighlights(true);
+  if (scrollToHighlight(id)) return true;
+
+  if (!document.querySelector(`[data-hl-id="${id}"]`) && highlight) {
+    const range = findTextOccurrenceRange(
+      highlight.text,
+      highlight.anchor?.occurrenceIndex ?? 0,
+      highlight.anchor?.prefix,
+    );
+    if (range) {
+      const mark = wrapRange(range, highlight.id, highlight.colorIndex);
+      if (mark) {
+        applyNoteToHighlight(highlight.id, highlight.note || "");
+        if (scrollToHighlight(id)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+async function scrollHuntForHighlight(id) {
+  const highlight = await getHighlightById(id);
+  if (!highlight) return false;
+
+  closeTooltip();
+  showHuntIndicator();
+
+  try {
+    const container = getMainScrollContainer();
+    const maxScroll = Math.max(0, container.scrollHeight - container.clientHeight);
+    const step = Math.max(240, Math.floor(container.clientHeight * 0.75));
+
+    const tryAt = async (scrollTop) => {
+      container.scrollTop = Math.min(Math.max(0, scrollTop), maxScroll);
+      await new Promise((r) => setTimeout(r, 400));
+      return tryRestoreAndScroll(id, highlight);
+    };
+
+    if (await tryRestoreAndScroll(id, highlight)) return true;
+
+    if (highlight.anchor?.scrollRatio != null && maxScroll > 0) {
+      const target = Math.round(highlight.anchor.scrollRatio * maxScroll);
+      if (await tryAt(target)) return true;
+
+      for (let offset = step; offset <= maxScroll; offset += step) {
+        if (await tryAt(Math.min(target + offset, maxScroll))) return true;
+        if (target - offset >= 0 && (await tryAt(target - offset))) return true;
+      }
+    }
+
+    for (let pos = 0; pos <= maxScroll; pos += step) {
+      if (await tryAt(pos)) return true;
+    }
+
+    return false;
+  } finally {
+    hideHuntIndicator();
+  }
+}
+
+async function setPendingScrollForHighlight(id) {
+  if (!isContextValid()) return;
+  try {
+    await chrome.storage.session.set({
+      [PENDING_SCROLL_KEY]: { url: normalizeUrl(location.href), id },
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
+async function clearPendingScroll() {
+  if (!isContextValid()) return;
+  try {
+    await chrome.storage.session.remove(PENDING_SCROLL_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+async function getPendingScroll() {
+  if (!isContextValid()) return null;
+  try {
+    const data = await chrome.storage.session.get(PENDING_SCROLL_KEY);
+    const pending = data[PENDING_SCROLL_KEY];
+    if (!pending || normalizeUrl(location.href) !== pending.url) return null;
+    return pending;
+  } catch {
+    return null;
+  }
+}
+
+async function scrollToHighlightWithRestore(id, { hunt = true } = {}) {
   if (scrollToHighlight(id)) return true;
 
   await restoreHighlights();
   if (scrollToHighlight(id)) return true;
 
-  for (let i = 0; i < 15; i++) {
-    await new Promise((r) => setTimeout(r, 200));
-    await restoreHighlights();
-    if (scrollToHighlight(id)) return true;
-  }
-  return false;
+  if (!hunt) return false;
+  return scrollHuntForHighlight(id);
+}
+
+async function retryPendingScroll() {
+  const pending = await getPendingScroll();
+  if (!pending) return;
+
+  const scrolled = await scrollToHighlightWithRestore(pending.id, { hunt: false });
+  if (scrolled) await clearPendingScroll();
 }
 
 async function consumePendingScroll() {
-  if (!isContextValid()) return;
-  let data;
-  try {
-    data = await chrome.storage.session.get(PENDING_SCROLL_KEY);
-  } catch {
-    return;
-  }
-  const pending = data[PENDING_SCROLL_KEY];
-  if (!pending || normalizeUrl(location.href) !== pending.url) return;
+  const pending = await getPendingScroll();
+  if (!pending) return;
 
-  try {
-    await chrome.storage.session.remove(PENDING_SCROLL_KEY);
-  } catch {
-    return;
-  }
-  await scrollToHighlightWithRestore(pending.id);
+  const scrolled = await scrollToHighlightWithRestore(pending.id);
+  if (scrolled) await clearPendingScroll();
 }
 
 // --- Tooltip ---
@@ -918,9 +1061,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
   if (msg.type === "SCROLL_TO") {
-    scrollToHighlightWithRestore(msg.id).then((scrolled) => {
-      sendResponse({ ok: true, scrolled });
-    });
+    setPendingScrollForHighlight(msg.id)
+      .then(() =>
+        scrollToHighlightWithRestore(msg.id, { hunt: msg.hunt !== false }),
+      )
+      .then(async (scrolled) => {
+        if (scrolled) await clearPendingScroll();
+        sendResponse({ ok: true, scrolled });
+      });
     return true;
   }
   if (msg.type === "GET_MIGRATION_STATUS") {
@@ -968,6 +1116,7 @@ window
     const observer = new MutationObserver(() => {
       if (!isContextValid()) return;
       scheduleRestore();
+      retryPendingScroll();
     });
     observer.observe(document.body, { childList: true, subtree: true });
   }

@@ -52,13 +52,20 @@ function waitForTabComplete(tabId) {
 }
 
 async function scrollInTab(tabId, highlightId) {
-  for (let i = 0; i < 25; i++) {
-    const res = await safeTabMessage(tabId, {
+  const res = await safeTabMessage(tabId, {
+    type: "SCROLL_TO",
+    id: highlightId,
+  });
+  if (res?.scrolled) return true;
+
+  for (let i = 0; i < 30; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    const retry = await safeTabMessage(tabId, {
       type: "SCROLL_TO",
       id: highlightId,
+      hunt: false,
     });
-    if (res?.scrolled) return true;
-    await new Promise((r) => setTimeout(r, 250));
+    if (retry?.scrolled) return true;
   }
   return false;
 }

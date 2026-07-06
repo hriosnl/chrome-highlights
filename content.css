@@ -220,3 +220,20 @@
 .hl-color-swatch.hl-selected {
   border-color: currentColor;
 }
+
+.hl-hunt-indicator {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2147483646;
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: rgba(32, 33, 36, 0.92);
+  color: #e8eaed;
+  font-family: "Google Sans", "Google Sans Text", "DM Sans", system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  pointer-events: none;
+}
