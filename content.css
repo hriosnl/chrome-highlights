@@ -25,6 +25,16 @@
   outline-offset: 2px;
 }
 
+.hl-mark.hl-outdated {
+  outline: 2px solid #d93025;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 1px rgba(217, 48, 37, 0.45);
+}
+
+.hl-mark.hl-has-note.hl-outdated::after {
+  box-shadow: 0 0 0 2px #d93025;
+}
+
 .hl-tooltip {
   position: absolute;
   z-index: 2147483647;

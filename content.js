@@ -390,6 +390,20 @@ function isSplitInDom(id) {
   return getMarksById(id).length > 1;
 }
 
+async function syncOutdatedIndicators() {
+  const res = await sendMessage({
+    type: "GET_PAGE_HIGHLIGHTS",
+    url: location.href,
+  });
+  const outdatedIds = new Set(
+    (res.highlights || []).filter(highlightNeedsMigration).map((h) => h.id),
+  );
+
+  for (const mark of document.querySelectorAll(`.${HL_CLASS}`)) {
+    mark.classList.toggle("hl-outdated", outdatedIds.has(mark.dataset.hlId));
+  }
+}
+
 async function getMigrationStatus() {
   const res = await sendMessage({
     type: "GET_PAGE_HIGHLIGHTS",
@@ -460,6 +474,7 @@ async function migratePageHighlights() {
     else failed++;
   }
 
+  await syncOutdatedIndicators();
   return { ok: true, updated, failed, skipped, total: highlights.length };
 }
 
@@ -549,6 +564,7 @@ async function restoreHighlights(force = false) {
   }
 
   restorePending = false;
+  await syncOutdatedIndicators();
 }
 
 let restoreTimer = null;
