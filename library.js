@@ -143,8 +143,17 @@ function renderTable(list) {
   }
   noResults.hidden = true;
 
+  let lastUrl = null;
+  let groupIndex = -1;
+
   for (const item of filtered) {
+    if (item.url !== lastUrl) {
+      groupIndex++;
+      lastUrl = item.url;
+    }
+
     const tr = document.createElement("tr");
+    tr.className = groupIndex % 2 === 0 ? "row-group-even" : "row-group-odd";
 
     const tdHighlight = document.createElement("td");
     tdHighlight.className = "col-highlight";

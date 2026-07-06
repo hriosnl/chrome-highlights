@@ -2,7 +2,10 @@ const HL_CLASS = "hl-mark";
 const TOOLTIP_ID = "hl-tooltip-root";
 const SETTINGS_KEY = "highlights_settings";
 const PENDING_SCROLL_KEY = "pending_scroll";
-const CURRENT_ANCHOR_VERSION = 2;
+const CURRENT_ANCHOR_VERSION = 3;
+const HUNT_STEP_RATIO = 0.4;
+const HUNT_SETTLE_MS = 150;
+const HUNT_SETTLE_MAX_MS = 1400;
 
 let tooltipEl = null;
 let activeMark = null;
@@ -342,14 +345,19 @@ function getScrollContainerForNode(node) {
   return document.scrollingElement || document.documentElement;
 }
 
-function getScrollRatioForRange(range) {
+function getScrollAnchorForRange(range) {
   const container = getScrollContainerForNode(range.startContainer);
-  const maxScroll = container.scrollHeight - container.clientHeight;
-  if (maxScroll <= 0) return 0;
+  const maxScroll = Math.max(0, container.scrollHeight - container.clientHeight);
   const rect = range.getBoundingClientRect();
   const containerRect = container.getBoundingClientRect();
-  const offsetTop = rect.top - containerRect.top + container.scrollTop;
-  return Math.max(0, Math.min(1, offsetTop / container.scrollHeight));
+  const targetScroll =
+    container.scrollTop + (rect.top - containerRect.top) - container.clientHeight * 0.25;
+  const clamped = Math.max(0, Math.min(maxScroll, targetScroll));
+
+  return {
+    scrollRatio: maxScroll > 0 ? clamped / maxScroll : 0,
+    scrollHeightAtSave: container.scrollHeight,
+  };
 }
 
 function buildAnchorForText(text, occurrenceIndex) {
@@ -369,7 +377,9 @@ function buildAnchorForText(text, occurrenceIndex) {
 function highlightNeedsMigration(h) {
   const version = h.anchorVersion ?? 1;
   const missingScroll = h.anchor?.scrollRatio == null;
-  const outdatedStorage = version < CURRENT_ANCHOR_VERSION || missingScroll;
+  const missingScrollHeight = h.anchor?.scrollHeightAtSave == null;
+  const outdatedStorage =
+    version < CURRENT_ANCHOR_VERSION || missingScroll || missingScrollHeight;
   const splitDom = isSplitInDom(h.id);
   return outdatedStorage || splitDom;
 }
@@ -409,14 +419,13 @@ async function migrateOneHighlight(h) {
   const range = findTextOccurrenceRange(h.text, occurrenceIndex, h.anchor?.prefix);
   if (!range) return { ok: false, reason: "not_found" };
 
-  const scrollRatio = getScrollRatioForRange(range);
+  const scrollAnchor = getScrollAnchorForRange(range);
   const mark = wrapRange(range, h.id, h.colorIndex);
   if (!mark) return { ok: false, reason: "wrap_failed" };
 
   applyNoteToHighlight(h.id, h.note || "");
 
-  const anchor = buildAnchorForText(h.text, occurrenceIndex);
-  anchor.scrollRatio = scrollRatio;
+  const anchor = { ...buildAnchorForText(h.text, occurrenceIndex), ...scrollAnchor };
 
   const updated = {
     ...h,
@@ -472,7 +481,7 @@ async function highlightSelection() {
   const id = uuid();
   const colorIndex = defaultColorIndex;
   const occurrenceIndex = getOccurrenceIndexFromRange(range, text);
-  const scrollRatio = getScrollRatioForRange(range);
+  const scrollAnchor = getScrollAnchorForRange(range);
   const mark = wrapRange(range, id, colorIndex);
   if (!mark) return;
 
@@ -495,7 +504,12 @@ async function highlightSelection() {
     colorIndex,
     note: "",
     anchorVersion: CURRENT_ANCHOR_VERSION,
-    anchor: { occurrenceIndex, prefix: ctx.prefix, suffix: ctx.suffix, scrollRatio },
+    anchor: {
+      occurrenceIndex,
+      prefix: ctx.prefix,
+      suffix: ctx.suffix,
+      ...scrollAnchor,
+    },
     createdAt: Date.now(),
   };
 
@@ -643,6 +657,45 @@ async function tryRestoreAndScroll(id, highlight) {
   return false;
 }
 
+function computeScrollTarget(highlight, container) {
+  const maxScroll = Math.max(0, container.scrollHeight - container.clientHeight);
+  if (maxScroll <= 0) return 0;
+
+  const ratio = highlight.anchor?.scrollRatio;
+  if (ratio == null) return 0;
+
+  let target = ratio * maxScroll;
+  const savedHeight = highlight.anchor?.scrollHeightAtSave;
+  if (
+    savedHeight &&
+    savedHeight > 0 &&
+    container.scrollHeight > savedHeight &&
+    ratio < 0.5
+  ) {
+    target *= savedHeight / container.scrollHeight;
+  }
+
+  return Math.max(0, Math.min(maxScroll, Math.round(target)));
+}
+
+function waitForContentSettle(root) {
+  return new Promise((resolve) => {
+    let timer = null;
+    const finish = () => {
+      observer.disconnect();
+      clearTimeout(timer);
+      resolve();
+    };
+    const observer = new MutationObserver(() => {
+      clearTimeout(timer);
+      timer = setTimeout(finish, HUNT_SETTLE_MS);
+    });
+    observer.observe(root, { childList: true, subtree: true });
+    timer = setTimeout(finish, HUNT_SETTLE_MS);
+    setTimeout(finish, HUNT_SETTLE_MAX_MS);
+  });
+}
+
 async function scrollHuntForHighlight(id) {
   const highlight = await getHighlightById(id);
   if (!highlight) return false;
@@ -653,18 +706,22 @@ async function scrollHuntForHighlight(id) {
   try {
     const container = getMainScrollContainer();
     const maxScroll = Math.max(0, container.scrollHeight - container.clientHeight);
-    const step = Math.max(240, Math.floor(container.clientHeight * 0.75));
+    const step = Math.max(180, Math.floor(container.clientHeight * HUNT_STEP_RATIO));
+    const settleRoot = container === document.documentElement ? document.body : container;
 
     const tryAt = async (scrollTop) => {
       container.scrollTop = Math.min(Math.max(0, scrollTop), maxScroll);
-      await new Promise((r) => setTimeout(r, 400));
+      await waitForContentSettle(settleRoot);
       return tryRestoreAndScroll(id, highlight);
     };
 
     if (await tryRestoreAndScroll(id, highlight)) return true;
 
-    if (highlight.anchor?.scrollRatio != null && maxScroll > 0) {
-      const target = Math.round(highlight.anchor.scrollRatio * maxScroll);
+    const ratio = highlight.anchor?.scrollRatio;
+    if (ratio != null && ratio < 0.5 && (await tryAt(0))) return true;
+
+    if (ratio != null && maxScroll > 0) {
+      const target = computeScrollTarget(highlight, container);
       if (await tryAt(target)) return true;
 
       for (let offset = step; offset <= maxScroll; offset += step) {
@@ -729,7 +786,10 @@ async function retryPendingScroll() {
   const pending = await getPendingScroll();
   if (!pending) return;
 
-  const scrolled = await scrollToHighlightWithRestore(pending.id, { hunt: false });
+  let scrolled = await scrollToHighlightWithRestore(pending.id, { hunt: false });
+  if (!scrolled) {
+    scrolled = await scrollToHighlightWithRestore(pending.id, { hunt: true });
+  }
   if (scrolled) await clearPendingScroll();
 }
 

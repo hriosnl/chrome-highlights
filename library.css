@@ -159,8 +159,16 @@ h1 {
   border-bottom: none;
 }
 
-.table tbody tr:hover {
-  background: #fafbfc;
+.table tbody tr.row-group-even td {
+  background: #ffffff;
+}
+
+.table tbody tr.row-group-odd td {
+  background: #f3f4f6;
+}
+
+.table tbody tr:hover td {
+  background: #eef2f7;
 }
 
 .col-highlight {
