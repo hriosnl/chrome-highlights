@@ -1,6 +1,28 @@
 const STORAGE_KEY = "highlights_by_url";
 const SETTINGS_KEY = "highlights_settings";
 
+function compareHighlightsByPosition(a, b) {
+  const ratioA = a.anchor?.scrollRatio;
+  const ratioB = b.anchor?.scrollRatio;
+  const hasRatioA = typeof ratioA === "number" && !Number.isNaN(ratioA);
+  const hasRatioB = typeof ratioB === "number" && !Number.isNaN(ratioB);
+
+  if (hasRatioA && hasRatioB && ratioA !== ratioB) {
+    return ratioA - ratioB;
+  }
+  if (hasRatioA !== hasRatioB) return hasRatioA ? -1 : 1;
+
+  const occA = a.anchor?.occurrenceIndex ?? 0;
+  const occB = b.anchor?.occurrenceIndex ?? 0;
+  if (occA !== occB) return occA - occB;
+
+  return (a.createdAt ?? 0) - (b.createdAt ?? 0);
+}
+
+function sortHighlightsByPosition(highlights) {
+  return [...highlights].sort(compareHighlightsByPosition);
+}
+
 async function migrateUrlKeys() {
   const all = await getAllHighlights();
   const merged = {};
@@ -23,8 +45,8 @@ async function migrateUrlKeys() {
 
   if (!changed) return all;
 
-  for (const list of Object.values(merged)) {
-    list.sort((a, b) => b.createdAt - a.createdAt);
+  for (const [key, list] of Object.entries(merged)) {
+    merged[key] = sortHighlightsByPosition(list);
   }
   await chrome.storage.local.set({ [STORAGE_KEY]: merged });
   return merged;
@@ -37,7 +59,7 @@ async function getAllHighlights() {
 
 async function getPageHighlights(url) {
   const all = await getAllHighlights();
-  return all[normalizeUrl(url)] || [];
+  return sortHighlightsByPosition(all[normalizeUrl(url)] || []);
 }
 
 async function savePageHighlights(url, highlights) {
@@ -62,8 +84,7 @@ async function upsertHighlight(url, highlight) {
   } else {
     list.push(highlight);
   }
-  list.sort((a, b) => b.createdAt - a.createdAt);
-  all[key] = list;
+  all[key] = sortHighlightsByPosition(list);
   await chrome.storage.local.set({ [STORAGE_KEY]: all });
   return highlight;
 }
@@ -107,8 +128,7 @@ async function mergeImportedHighlights(importedByUrl) {
       added++;
     }
 
-    existing.sort((a, b) => b.createdAt - a.createdAt);
-    all[key] = existing;
+    all[key] = sortHighlightsByPosition(existing);
   }
 
   await chrome.storage.local.set({ [STORAGE_KEY]: all });
@@ -117,13 +137,25 @@ async function mergeImportedHighlights(importedByUrl) {
 
 async function getFlatHighlights() {
   const all = await getAllHighlights();
-  const flat = [];
+  const pages = [];
+
   for (const [url, highlights] of Object.entries(all)) {
+    const sorted = sortHighlightsByPosition(highlights);
+    const pageNewest = sorted.reduce(
+      (max, h) => Math.max(max, h.createdAt ?? 0),
+      0,
+    );
+    pages.push({ url, pageNewest, highlights: sorted });
+  }
+
+  pages.sort((a, b) => b.pageNewest - a.pageNewest);
+
+  const flat = [];
+  for (const { url, highlights } of pages) {
     for (const h of highlights) {
       flat.push({ ...h, url });
     }
   }
-  flat.sort((a, b) => b.createdAt - a.createdAt);
   return flat;
 }
 
@@ -138,4 +170,5 @@ if (typeof globalThis !== "undefined") {
   globalThis.saveSettings = saveSettings;
   globalThis.getFlatHighlights = getFlatHighlights;
   globalThis.mergeImportedHighlights = mergeImportedHighlights;
+  globalThis.sortHighlightsByPosition = sortHighlightsByPosition;
 }
