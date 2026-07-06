@@ -293,9 +293,16 @@ function downloadBackupFile(backup) {
 function setBackupsPanelOpen(open) {
   backupPanel.classList.toggle("open", open);
   backupOverlay.classList.toggle("open", open);
-  backupPanel.setAttribute("aria-hidden", open ? "false" : "true");
   backupOverlay.hidden = !open;
   document.body.style.overflow = open ? "hidden" : "";
+
+  if (open) {
+    backupPanel.removeAttribute("aria-hidden");
+    backupPanel.removeAttribute("inert");
+  } else {
+    backupPanel.setAttribute("aria-hidden", "true");
+    backupPanel.setAttribute("inert", "");
+  }
 }
 
 async function renderBackupsList() {
@@ -354,6 +361,9 @@ async function openBackupsPanel() {
 }
 
 function closeBackupsPanel() {
+  if (backupPanel.contains(document.activeElement)) {
+    viewBackupsBtn.focus();
+  }
   setBackupsPanelOpen(false);
 }
 
