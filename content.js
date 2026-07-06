@@ -2,6 +2,7 @@ const HL_CLASS = "hl-mark";
 const TOOLTIP_ID = "hl-tooltip-root";
 const SETTINGS_KEY = "highlights_settings";
 const PENDING_SCROLL_KEY = "pending_scroll";
+const CURRENT_ANCHOR_VERSION = 2;
 
 let tooltipEl = null;
 let activeMark = null;
@@ -328,6 +329,127 @@ function unwrapHighlight(id) {
   }
 }
 
+function getScrollContainerForNode(node) {
+  let el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+  while (el && el !== document.documentElement) {
+    const style = getComputedStyle(el);
+    const scrollable =
+      el.scrollHeight > el.clientHeight + 2 &&
+      (style.overflowY === "auto" || style.overflowY === "scroll");
+    if (scrollable) return el;
+    el = el.parentElement;
+  }
+  return document.scrollingElement || document.documentElement;
+}
+
+function getScrollRatioForRange(range) {
+  const container = getScrollContainerForNode(range.startContainer);
+  const maxScroll = container.scrollHeight - container.clientHeight;
+  if (maxScroll <= 0) return 0;
+  const rect = range.getBoundingClientRect();
+  const containerRect = container.getBoundingClientRect();
+  const offsetTop = rect.top - containerRect.top + container.scrollTop;
+  return Math.max(0, Math.min(1, offsetTop / container.scrollHeight));
+}
+
+function buildAnchorForText(text, occurrenceIndex) {
+  const nodes = getTextNodes();
+  const fullText = nodes.map((n) => n.textContent).join("");
+  let pos = 0;
+  let occ = 0;
+  while ((pos = fullText.indexOf(text, pos)) !== -1) {
+    if (occ === occurrenceIndex) break;
+    occ++;
+    pos += text.length || 1;
+  }
+  const ctx = getContextAround(fullText, Math.max(0, pos));
+  return { occurrenceIndex, prefix: ctx.prefix, suffix: ctx.suffix };
+}
+
+function highlightNeedsMigration(h) {
+  const version = h.anchorVersion ?? 1;
+  const missingScroll = h.anchor?.scrollRatio == null;
+  const outdatedStorage = version < CURRENT_ANCHOR_VERSION || missingScroll;
+  const splitDom = isSplitInDom(h.id);
+  return outdatedStorage || splitDom;
+}
+
+function isSplitInDom(id) {
+  return getMarksById(id).length > 1;
+}
+
+async function getMigrationStatus() {
+  const res = await sendMessage({
+    type: "GET_PAGE_HIGHLIGHTS",
+    url: location.href,
+  });
+  const highlights = res.highlights || [];
+  let outdated = 0;
+  let split = 0;
+  let missingScroll = 0;
+
+  for (const h of highlights) {
+    if (!highlightNeedsMigration(h)) continue;
+    outdated++;
+    if (isSplitInDom(h.id)) split++;
+    if (h.anchor?.scrollRatio == null) missingScroll++;
+  }
+
+  return { ok: true, outdated, split, missingScroll, total: highlights.length };
+}
+
+async function migrateOneHighlight(h) {
+  if (getMarksById(h.id).length) {
+    unwrapHighlight(h.id);
+  }
+
+  const occurrenceIndex = h.anchor?.occurrenceIndex ?? 0;
+  const range = findTextOccurrenceRange(h.text, occurrenceIndex, h.anchor?.prefix);
+  if (!range) return { ok: false, reason: "not_found" };
+
+  const scrollRatio = getScrollRatioForRange(range);
+  const mark = wrapRange(range, h.id, h.colorIndex);
+  if (!mark) return { ok: false, reason: "wrap_failed" };
+
+  applyNoteToHighlight(h.id, h.note || "");
+
+  const anchor = buildAnchorForText(h.text, occurrenceIndex);
+  anchor.scrollRatio = scrollRatio;
+
+  const updated = {
+    ...h,
+    anchorVersion: CURRENT_ANCHOR_VERSION,
+    anchor,
+  };
+  await sendMessage({ type: "UPDATE_HIGHLIGHT", highlight: updated });
+  return { ok: true };
+}
+
+async function migratePageHighlights() {
+  closeTooltip();
+
+  const res = await sendMessage({
+    type: "GET_PAGE_HIGHLIGHTS",
+    url: location.href,
+  });
+  const highlights = res.highlights || [];
+  let updated = 0;
+  let failed = 0;
+  let skipped = 0;
+
+  for (const h of highlights) {
+    if (!highlightNeedsMigration(h)) {
+      skipped++;
+      continue;
+    }
+    const result = await migrateOneHighlight(h);
+    if (result.ok) updated++;
+    else failed++;
+  }
+
+  return { ok: true, updated, failed, skipped, total: highlights.length };
+}
+
 // --- Highlight CRUD ---
 
 async function loadSettings() {
@@ -348,6 +470,7 @@ async function highlightSelection() {
   const id = uuid();
   const colorIndex = defaultColorIndex;
   const occurrenceIndex = getOccurrenceIndexFromRange(range, text);
+  const scrollRatio = getScrollRatioForRange(range);
   const mark = wrapRange(range, id, colorIndex);
   if (!mark) return;
 
@@ -369,7 +492,8 @@ async function highlightSelection() {
     text,
     colorIndex,
     note: "",
-    anchor: { occurrenceIndex, prefix: ctx.prefix, suffix: ctx.suffix },
+    anchorVersion: CURRENT_ANCHOR_VERSION,
+    anchor: { occurrenceIndex, prefix: ctx.prefix, suffix: ctx.suffix, scrollRatio },
     createdAt: Date.now(),
   };
 
@@ -403,7 +527,7 @@ async function restoreHighlights() {
 
     const mark = wrapRange(range, h.id, h.colorIndex);
     if (!mark) continue;
-    applyNoteBadge(mark, h.note || "");
+    applyNoteToHighlight(h.id, h.note || "");
   }
 
   restorePending = false;
@@ -797,6 +921,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     scrollToHighlightWithRestore(msg.id).then((scrolled) => {
       sendResponse({ ok: true, scrolled });
     });
+    return true;
+  }
+  if (msg.type === "GET_MIGRATION_STATUS") {
+    getMigrationStatus().then(sendResponse);
+    return true;
+  }
+  if (msg.type === "MIGRATE_PAGE_HIGHLIGHTS") {
+    migratePageHighlights().then(sendResponse);
     return true;
   }
   return false;

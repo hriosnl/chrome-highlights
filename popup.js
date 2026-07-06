@@ -4,6 +4,9 @@ const copyAllBtn = document.getElementById("copy-all");
 const highlightList = document.getElementById("highlight-list");
 const emptyState = document.getElementById("empty-state");
 const libraryLink = document.getElementById("library-link");
+const migrationBanner = document.getElementById("migration-banner");
+const migrationText = document.getElementById("migration-text");
+const migrateBtn = document.getElementById("migrate-btn");
 
 let currentColorIndex = 0;
 let currentTab = null;
@@ -23,6 +26,47 @@ function sendMessage(msg) {
       resolve({});
     }
   });
+}
+
+function sendTabMessage(msg) {
+  return new Promise((resolve) => {
+    if (!currentTab?.id) {
+      resolve({});
+      return;
+    }
+    chrome.tabs.sendMessage(currentTab.id, msg, (res) => {
+      void chrome.runtime.lastError;
+      resolve(res || {});
+    });
+  });
+}
+
+function hideMigrationBanner() {
+  migrationBanner.hidden = true;
+}
+
+function showMigrationBanner(count) {
+  migrationText.textContent =
+    `${count} highlight${count === 1 ? "" : "s"} on this page use an older format. ` +
+    "Update for better wrapping and scroll-to-highlight.";
+  migrateBtn.hidden = false;
+  migrateBtn.disabled = false;
+  migrateBtn.textContent = "Update all";
+  migrationBanner.hidden = false;
+}
+
+async function refreshMigrationBanner() {
+  if (!currentTab?.id) {
+    hideMigrationBanner();
+    return;
+  }
+
+  const status = await sendTabMessage({ type: "GET_MIGRATION_STATUS" });
+  if (!status.ok || !status.outdated) {
+    hideMigrationBanner();
+    return;
+  }
+  showMigrationBanner(status.outdated);
 }
 
 function createColorDot(colorIndex) {
@@ -136,6 +180,32 @@ libraryLink.addEventListener("click", (e) => {
   chrome.tabs.create({ url: chrome.runtime.getURL("library.html") });
 });
 
+migrateBtn.addEventListener("click", async () => {
+  migrateBtn.disabled = true;
+  migrateBtn.textContent = "Updating…";
+
+  const res = await sendTabMessage({ type: "MIGRATE_PAGE_HIGHLIGHTS" });
+  if (!res.ok) {
+    migrationText.textContent = "Couldn't update highlights. Try reloading the page.";
+    migrateBtn.textContent = "Update all";
+    migrateBtn.disabled = false;
+    return;
+  }
+
+  if (res.failed > 0) {
+    migrationText.textContent =
+      `Updated ${res.updated}. ${res.failed} not found — scroll the page and try again.`;
+    migrateBtn.textContent = "Retry";
+    migrateBtn.disabled = false;
+    return;
+  }
+
+  migrationText.textContent =
+    `Updated ${res.updated} highlight${res.updated === 1 ? "" : "s"}.`;
+  migrateBtn.hidden = true;
+  setTimeout(hideMigrationBanner, 2200);
+});
+
 async function init() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   currentTab = tab;
@@ -154,6 +224,7 @@ async function init() {
     url: tab.url,
   });
   renderList(res.highlights || []);
+  await refreshMigrationBanner();
 }
 
 init();
